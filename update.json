@@ -1,0 +1,19 @@
+{
+  "addons": {
+    "reading-partner@grahmgaydos.dev": {
+      "updates": [
+        {
+          "version": "0.1.0",
+          "update_link": "https://github.com/grahmgaydos/zotero-reading-partner/releases/download/v0.1.0/reading-partner-0.1.0.xpi",
+          "update_hash": "sha256:74b11b808dd7a68fcd01b8c41c4aeaf6108c7ede0c03b6091228eec3688197ea",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "11.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
