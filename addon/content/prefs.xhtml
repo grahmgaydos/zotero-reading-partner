@@ -1,0 +1,147 @@
+<vbox xmlns="http://www.w3.org/1999/xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+
+  <html:style>
+    .rpp { padding: 10px; }
+    .rpp fieldset { margin-bottom: 12px; padding: 8px; }
+    .rpp legend { font-weight: 600; }
+    .rpp-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .rpp-row label { min-width: 220px; }
+    .rpp-note { color: #666; font-size: 11px; margin: 2px 0 8px 228px; }
+    .rpp input[type="text"],
+    .rpp input[type="password"] { flex: 1; min-width: 320px; }
+    .rpp textarea { width: 100%; font-family: monospace; font-size: 12px; }
+    #rpp-test-result { margin-left: 8px; }
+  </html:style>
+
+  <html:div class="rpp">
+
+    <html:fieldset>
+      <html:legend>Model</html:legend>
+      <html:p class="rpp-note" style="margin-left: 0">
+        Separate from the PDF Auto-Summariser's settings, so the two can use different models.
+      </html:p>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-backend">Backend</html:label>
+        <html:select id="rpp-backend" preference="extensions.reading-partner.backend">
+          <html:option value="ollama">Ollama (local)</html:option>
+          <html:option value="lmstudio">LM Studio (local)</html:option>
+          <html:option value="openai">OpenAI / OpenRouter</html:option>
+          <html:option value="anthropic">Anthropic</html:option>
+        </html:select>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-endpoint">Endpoint URL</html:label>
+        <html:input type="text" id="rpp-endpoint" preference="extensions.reading-partner.endpoint"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-model">Model</html:label>
+        <html:input type="text" id="rpp-model" preference="extensions.reading-partner.model"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-apikey">API key (blank for local)</html:label>
+        <html:input type="password" id="rpp-apikey" preference="extensions.reading-partner.apiKey"/>
+      </html:div>
+      <html:p class="rpp-note">
+        Stored in plain text in your Zotero profile. Only set this for cloud backends.
+        Cloud backends receive the paper's text, any other readings you bring in, and your highlights and notes.
+      </html:p>
+
+      <html:div class="rpp-row">
+        <html:label>&#160;</html:label>
+        <html:button id="rpp-test-btn" type="button">Test connection</html:button>
+        <html:span id="rpp-test-result"></html:span>
+      </html:div>
+    </html:fieldset>
+
+    <html:fieldset>
+      <html:legend>Context and replies</html:legend>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-maxchars">Max characters of paper text</html:label>
+        <html:input type="number" id="rpp-maxchars" min="0" max="2000000" step="10000"
+                    preference="extensions.reading-partner.maxChars"/>
+      </html:div>
+      <html:p class="rpp-note">
+        0 (the default) reads the whole paper. Set a cap only for very long texts such as books; a capped paper keeps
+        its opening, its end and the pages around where you were when the conversation started. Ollama's context is capped at 64k tokens,
+        roughly 180,000 characters including any other readings.
+      </html:p>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-relatedmax">Max characters per other reading</html:label>
+        <html:input type="number" id="rpp-relatedmax" min="5000" max="200000" step="5000"
+                    preference="extensions.reading-partner.relatedMaxChars"/>
+      </html:div>
+      <html:p class="rpp-note">
+        For papers brought in with Readings, which are secondary and do get shortened. On Ollama, the paper plus every
+        other reading has to fit in 64k tokens.
+      </html:p>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-maxtokens">Max reply length (tokens)</html:label>
+        <html:input type="number" id="rpp-maxtokens" min="128" max="8192" step="128"
+                    preference="extensions.reading-partner.maxTokens"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-notes">Include the paper's notes</html:label>
+        <html:input type="checkbox" id="rpp-notes" preference="extensions.reading-partner.includeNotes"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-color">Colour for highlights added from the chat</html:label>
+        <html:select id="rpp-color" preference="extensions.reading-partner.highlightColor">
+          <html:option value="#a28ae5">Purple</html:option>
+          <html:option value="#ffd400">Yellow</html:option>
+          <html:option value="#ff6666">Red</html:option>
+          <html:option value="#5fb236">Green</html:option>
+          <html:option value="#2ea8e5">Blue</html:option>
+          <html:option value="#e56eee">Magenta</html:option>
+          <html:option value="#f19837">Orange</html:option>
+          <html:option value="#aaaaaa">Grey</html:option>
+        </html:select>
+      </html:div>
+    </html:fieldset>
+
+    <html:fieldset>
+      <html:legend>Research wiki (Obsidian)</html:legend>
+      <html:p class="rpp-note" style="margin-left: 0">
+        The Wiki button files a reviewed record of the conversation under "Reading conversations" on the paper's source page.
+        Leave the folder blank to use the PDF Auto-Summariser's vault (<html:span id="rpp-shared-vault">not set</html:span>).
+      </html:p>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-vaultpath">Vault folder</html:label>
+        <html:input type="text" id="rpp-vaultpath" placeholder="Same as PDF Auto-Summariser"
+                    preference="extensions.reading-partner.vaultPath"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-vaultfolder">Sources subfolder</html:label>
+        <html:input type="text" id="rpp-vaultfolder" placeholder="sources"
+                    preference="extensions.reading-partner.vaultSourcesFolder"/>
+      </html:div>
+
+      <html:div class="rpp-row">
+        <html:label for="rpp-readername">Your name in wiki entries</html:label>
+        <html:input type="text" id="rpp-readername" placeholder="the reader"
+                    preference="extensions.reading-partner.readerName"/>
+      </html:div>
+    </html:fieldset>
+
+    <html:fieldset>
+      <html:legend>How it talks (system prompt)</html:legend>
+      <html:p class="rpp-note" style="margin-left: 0">
+        Leave blank to use the built-in prompt, shown greyed out below.
+      </html:p>
+      <html:textarea id="rpp-prompt" rows="14" preference="extensions.reading-partner.prompt"/>
+    </html:fieldset>
+
+  </html:div>
+
+</vbox>

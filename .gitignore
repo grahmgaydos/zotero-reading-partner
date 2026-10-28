@@ -1,0 +1,4 @@
+node_modules/
+addon/content/index.js
+dist/
+.DS_Store
