@@ -64,9 +64,10 @@
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wireUp, { once: true });
-  } else {
-    wireUp();
-  }
+  // Zotero runs this script before it inserts the pane's markup, so the
+  // elements don't exist yet. It fires a (non-bubbling) "showing" event on
+  // the pane's children each time the pane is shown; catch it in the capture
+  // phase and wire up then. wireUp is idempotent.
+  document.addEventListener("showing", wireUp, true);
+  wireUp();
 })();

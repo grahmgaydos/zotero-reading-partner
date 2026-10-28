@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Reading Partner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A dialogue partner in the PDF reader's side pane. It reads the paper alongside your highlights and notes, and lets you pin points from the conversation onto passages as highlight comments.",
   "author": "Grahm Gaydos",
   "homepage_url": "https://github.com/grahmgaydos/zotero-reading-partner",
