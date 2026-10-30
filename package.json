@@ -1,6 +1,6 @@
 {
   "name": "zotero-reading-partner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Zotero 7 plugin: a dialogue partner in the PDF reader's side pane that reads the paper alongside your highlights and notes, using a local (Ollama/LM Studio) or cloud (Anthropic/OpenAI/OpenRouter) model.",
   "private": true,
   "type": "module",
