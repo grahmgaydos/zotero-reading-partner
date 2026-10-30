@@ -59,6 +59,9 @@ export interface WikiDraft {
   exists: boolean;
   /** For display, e.g. "sources/KEMPENEER2023.md". */
   relPath: string;
+  /** How many messages and pinned points the draft covers. */
+  through: number;
+  pinCount: number;
 }
 
 export async function draftWikiEntry(session: Session): Promise<WikiDraft> {
@@ -68,7 +71,11 @@ export async function draftWikiEntry(session: Session): Promise<WikiDraft> {
   const parent = attachment.parentItem;
   if (!parent) throw new Error("This PDF isn't attached to a Zotero item, so it has no wiki page.");
 
-  const fresh = session.messages.slice(session.exportedThrough).filter((m) => m.content && !m.error);
+  // Fixed now: anything said or pinned while the draft is under review is
+  // left for the next entry.
+  const through = session.messages.length;
+  const pins = session.pinnedPoints.slice();
+  const fresh = session.messages.slice(session.exportedThrough, through).filter((m) => m.content.trim() && !m.error);
   if (!fresh.some((m) => m.role === "assistant")) {
     throw new Error("Nothing new to file since the last wiki entry.");
   }
@@ -92,58 +99,93 @@ export async function draftWikiEntry(session: Session): Promise<WikiDraft> {
     "",
     `*Distilled by Reading Partner (${prefs.model}) from a conversation in Zotero, and reviewed before filing.*`,
     "",
-    record,
+    cleanModelText(record),
   ];
-  if (session.pinnedPoints.length) {
+  if (pins.length) {
     lines.push("", "**Pinned to the PDF:**", "");
-    for (const p of session.pinnedPoints) {
-      const where = p.pageLabel ? `p. ${p.pageLabel}, ` : "";
-      const passage = p.passage ? `${where}on "${clip(p.passage, 160)}": ` : where;
-      lines.push(`- ${passage}${p.text.replace(/\s*\n+\s*/g, " ")}`);
+    for (const p of pins) {
+      const where = p.pageLabel ? `p. ${cleanInline(p.pageLabel)}, ` : "";
+      const passage = p.passage ? `${where}on "${clip(cleanInline(p.passage), 160)}": ` : where;
+      lines.push(`- ${passage}${cleanInline(p.text)}`);
     }
   }
 
   await IOUtils.makeDirectory(target.dir, { createAncestors: true, ignoreExisting: true });
-  const existing = await findPage(target.dir, parent.key);
-  const path = existing ?? (await freePath(target.dir, readMeta(parent, attachment)));
+  const meta = readMeta(parent, attachment);
+  const existing = await findPage(target.dir, meta.citekey, meta.zoteroKey);
+  const path = existing ?? (await freePath(target.dir, meta));
   return {
     markdown: lines.join("\n"),
     path,
     exists: !!existing,
     relPath: `${target.folder}/${PathUtils.filename(path)}`,
+    through,
+    pinCount: pins.length,
   };
 }
 
-export async function writeWikiEntry(session: Session, draft: WikiDraft, markdown: string): Promise<void> {
+/** Writes the reviewed entry; returns a line saying where it went. */
+export async function writeWikiEntry(session: Session, draft: WikiDraft, markdown: string): Promise<string> {
   const prefs = getPrefs();
   const target = await vaultTarget(prefs);
   const attachment = session.attachment;
   const meta = readMeta(attachment.parentItem, attachment);
   const today = localDate();
-  const entry = markdown.trim();
+  const entry = safeEntry(markdown);
+  if (!entry) throw new Error("The entry is empty.");
 
-  // Re-check: the page may have been created since the draft was made.
-  const existingPath = await findPage(target.dir, meta.zoteroKey);
-  let content: string;
+  // Re-check: the page may have been created since the draft was made, and
+  // the filename picked then may since have gone to another paper.
+  const existingPath = await findPage(target.dir, meta.citekey, meta.zoteroKey);
+  let path: string;
   if (existingPath) {
-    draft.path = existingPath;
-    content = insertEntry(await IOUtils.readUTF8(existingPath), entry, today);
+    path = existingPath;
+    await IOUtils.writeUTF8(path, insertEntry(await IOUtils.readUTF8(path), entry, today), {
+      tmpPath: `${path}.tmp`,
+    });
   } else {
-    content = newPage(meta, entry, today);
+    path = await createPage(target.dir, meta, newPage(meta, entry, today));
   }
-  await IOUtils.writeUTF8(draft.path, content);
+  // The entry is on the page: mark it filed before anything else can fail,
+  // so a retry can't file it twice.
+  await session.markExported(draft.through, draft.pinCount);
 
-  const link = `${target.folder}/${PathUtils.filename(draft.path).replace(/\.md$/, "")}`;
-  await appendLog(
-    target.vault,
-    existingPath ? "update" : "create",
-    `${meta.shortAuthors} (${meta.year || "n.d."}): ${meta.title}`,
-    existingPath
-      ? `Reading conversation added to [[${link}]] by Reading Partner (${prefs.model}).`
-      : `Source page [[${link}]] created by Reading Partner with a reading conversation and no summary yet. Status: unprocessed.`,
-    today
-  );
-  session.markExported();
+  const relPath = `${target.folder}/${PathUtils.filename(path)}`;
+  const link = relPath.replace(/\.md$/, "");
+  try {
+    await appendLog(
+      target.vault,
+      existingPath ? "update" : "create",
+      cleanInline(`${meta.shortAuthors} (${meta.year || "n.d."}): ${meta.title}`),
+      existingPath
+        ? `Reading conversation added to [[${link}]] by Reading Partner (${prefs.model}).`
+        : `Source page [[${link}]] created by Reading Partner with a reading conversation and no summary yet. Status: unprocessed.`,
+      today
+    );
+  } catch (e: any) {
+    Zotero.debug(`[Reading Partner] log.md append failed: ${e?.message || e}`);
+    return `Filed to ${relPath}, but log.md couldn't be updated (${e?.message || e}).`;
+  }
+  return `Filed to ${relPath}.`;
+}
+
+// Never replaces an existing file: if the free name is taken by the time we
+// write (another paper with the same citekey, or the summariser), fall back
+// to the key-suffixed name, and fail rather than overwrite that.
+async function createPage(dir: string, meta: ItemMeta, content: string): Promise<string> {
+  const candidates = [
+    PathUtils.join(dir, `${meta.citekey}.md`),
+    PathUtils.join(dir, `${meta.citekey}-${meta.zoteroKey.toLowerCase()}.md`),
+  ];
+  for (const path of candidates) {
+    try {
+      await IOUtils.writeUTF8(path, content, { mode: "create" });
+      return path;
+    } catch (e: any) {
+      if (!(await IOUtils.exists(path))) throw e;
+    }
+  }
+  throw new Error(`Couldn't create a page: ${candidates.map((p) => PathUtils.filename(p)).join(" and ")} already exist.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +240,7 @@ function pageRange(messages: Message[]): string {
 // just above "## My notes" (the human-authored section, which stays last
 // and is never touched), or at the end.
 function insertEntry(page: string, entry: string, today: string): string {
-  page = page.replace(/^updated:.*$/m, `updated: ${today}`);
+  page = touchUpdated(page, today);
   const at = page.indexOf(`\n${SECTION}`);
   if (at !== -1) {
     const after = at + SECTION.length + 1;
@@ -212,6 +254,13 @@ function insertEntry(page: string, entry: string, today: string): string {
     return `${page.slice(0, notes).replace(/\s*$/, "")}\n\n${section}${page.slice(notes)}`;
   }
   return `${page.replace(/\s*$/, "")}\n\n${section}`;
+}
+
+// Only the frontmatter's `updated:`, never a line in the body.
+function touchUpdated(page: string, today: string): string {
+  const fm = page.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/)?.[0];
+  if (!fm) return page;
+  return fm.replace(/^updated:.*$/m, `updated: ${today}`) + page.slice(fm.length);
 }
 
 const SECTION_INTRO =
@@ -263,20 +312,69 @@ function newPage(meta: ItemMeta, entry: string, today: string): string {
   );
 }
 
+// Appended rather than read and rewritten, so an entry the summariser adds at
+// the same moment isn't lost.
 async function appendLog(vault: string, op: string, title: string, what: string, today: string): Promise<void> {
   const logPath = PathUtils.join(vault, "log.md");
-  let current = (await IOUtils.exists(logPath)) ? await IOUtils.readUTF8(logPath) : "# Log — research\n";
-  current = current.replace(/\s*$/, "\n");
-  await IOUtils.writeUTF8(logPath, `${current}\n## [${today}] ${op} | ${title}\n${what}\n`);
+  const entry = `\n## [${today}] ${op} | ${title}\n${what}\n`;
+  if (await IOUtils.exists(logPath)) {
+    await IOUtils.writeUTF8(logPath, entry, { mode: "append" });
+  } else {
+    await IOUtils.writeUTF8(logPath, `# Log — research\n${entry}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cleaning text that goes onto the page
+
+// The record is model output, shaped by PDF text that may carry a prompt
+// injection, and it goes into pages that Obsidian renders and an agent reads.
+// As in the summariser: remove what could fake page structure (a "## My
+// notes" heading the agent would credit to the reader; the summariser's
+// markers), embed remote content (HTML, ![](…) images) or run code (fenced
+// blocks such as dataviewjs).
+function cleanModelText(s: string): string {
+  return stripMarkers(s)
+    .replace(/<\/?[a-zA-Z][^>]*>/g, "")
+    .replace(/<!--|-->/g, "")
+    .replace(/^[ \t]*(```|~~~).*$/gm, "")
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/!\[/g, "[")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// For single-line contexts (list items, log entries): also fold newlines.
+function cleanInline(s: string): string {
+  return cleanModelText(s).replace(/\s+/g, " ").trim();
+}
+
+function stripMarkers(s: string): string {
+  return s.split(START).join("").split(END).join("");
+}
+
+// The entry as the reader left it after review. They may have edited it, so
+// it isn't cleaned like model text, but nothing in it may close our section
+// or open another: headings above ### are demoted, and markers removed.
+function safeEntry(s: string): string {
+  return stripMarkers(s)
+    .replace(/<!--|-->/g, "")
+    .replace(/^[ \t]{0,3}#{1,2}(?=[ \t])/gm, "###")
+    .trim();
 }
 
 // ---------------------------------------------------------------------------
 // Locating pages (as in the summariser)
 
-async function findPage(dir: string, zoteroKey: string): Promise<string | null> {
+// The citekey's own file first, then any page with this zotero-key, so both
+// plugins pick the same page when there are duplicates.
+async function findPage(dir: string, citekey: string, zoteroKey: string): Promise<string | null> {
   if (!(await IOUtils.exists(dir))) return null;
+  const preferred = PathUtils.join(dir, `${citekey}.md`);
+  if ((await IOUtils.exists(preferred)) && (await keyOf(preferred)) === zoteroKey) return preferred;
   for (const child of await IOUtils.getChildren(dir)) {
-    if (child.endsWith(".md") && (await keyOf(child)) === zoteroKey) return child;
+    if (!child.endsWith(".md") || child === preferred) continue;
+    if ((await keyOf(child)) === zoteroKey) return child;
   }
   return null;
 }
@@ -287,14 +385,25 @@ async function freePath(dir: string, meta: ItemMeta): Promise<string> {
   return PathUtils.join(dir, `${meta.citekey}-${meta.zoteroKey.toLowerCase()}.md`);
 }
 
-async function keyOf(path: string): Promise<string | null> {
+// Frontmatter sits at the top, so read 8 KB rather than whole pages; but a
+// paper with hundreds of authors can push it past that, so then read it all.
+async function readHead(path: string): Promise<string> {
   try {
     const bytes = await IOUtils.read(path, { maxBytes: 8192 });
     const head = new TextDecoder().decode(bytes);
-    return head.match(/^zotero-key:\s*"?([A-Z0-9]+)"?\s*$/m)?.[1] ?? null;
+    if (head.startsWith("---") && !/\r?\n---\r?\n/.test(head.slice(3)) && bytes.length >= 8192) {
+      return await IOUtils.readUTF8(path);
+    }
+    return head;
   } catch {
-    return null;
+    return "";
   }
+}
+
+// From the frontmatter only: a body could contain a "zotero-key:" line too.
+async function keyOf(path: string): Promise<string | null> {
+  const fm = (await readHead(path)).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  return fm?.match(/^zotero-key:\s*"?([A-Z0-9]+)"?\s*$/m)?.[1] ?? null;
 }
 
 // ---------------------------------------------------------------------------

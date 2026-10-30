@@ -1,7 +1,7 @@
 // The chat itself: an item pane section that appears in the reader's
 // right-hand pane, with its own icon in the side nav.
 
-import { getSession, type Message, type Session } from "./session";
+import { getSession, type Message, type ReaderPage, type Session } from "./session";
 import {
   getPin,
   onPinChange,
@@ -60,10 +60,13 @@ function readerForBody(body: Element): any {
   return tabID ? Zotero.Reader.getByTabID(tabID) : null;
 }
 
-// From the reader's internal view state; undefined if that ever moves.
-function currentPageLabel(reader: any): string | undefined {
+// From the reader's internal view state; empty if that ever moves. The label
+// is the printed page number ("215", "iv"); the index is the page's position
+// in the PDF, which is what the paper text's [p. N] markers count.
+function currentPage(reader: any): ReaderPage {
   const stats = reader?._internalReader?._state?.primaryViewStats;
-  return stats?.pageLabel || (stats?.pageIndex !== undefined ? String(stats.pageIndex + 1) : undefined);
+  const index = Number.isInteger(stats?.pageIndex) ? stats.pageIndex + 1 : undefined;
+  return { label: stats?.pageLabel || (index !== undefined ? String(index) : undefined), index };
 }
 
 function unbind(body: Element): void {
@@ -152,7 +155,12 @@ function build(body: Element, session: Session): void {
     input.value = "";
     const f = session.draftFocus ?? undefined;
     session.draftFocus = null;
-    void session.send(text, f, currentPageLabel(readerForBody(body)));
+    void session.send(text, f, currentPage(readerForBody(body))).then((sent) => {
+      // A reply was still finishing (e.g. just after New): give the text back.
+      if (sent) return;
+      if (!input.value) input.value = text;
+      if (f && !session.draftFocus) session.setDraftFocus(f);
+    });
   };
   send.addEventListener("click", submit);
   input.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -351,10 +359,7 @@ async function openWiki(panel: HTMLElement, session: Session): Promise<void> {
     panelButtons(doc, panel, [
       [
         "File it",
-        async () => {
-          await writeWikiEntry(session, draft, editor.value);
-        },
-        `Filed to ${draft.relPath}.`,
+        () => writeWikiEntry(session, draft, editor.value),
       ],
     ])
   );
@@ -364,7 +369,8 @@ async function openWiki(panel: HTMLElement, session: Session): Promise<void> {
 function panelButtons(
   doc: Document,
   panel: HTMLElement,
-  actions: [string, () => void | Promise<void>, string?][]
+  // An action can return the message to show when it's done.
+  actions: [string, () => void | string | Promise<void | string>, string?][]
 ): HTMLElement {
   const row = h(doc, "div", "rp-panel-buttons");
   for (const [label, fn, done] of actions) {
@@ -372,9 +378,10 @@ function panelButtons(
     b.addEventListener("click", async () => {
       b.disabled = true;
       try {
-        await fn();
-        if (done) {
-          panel.replaceChildren(h(doc, "p", "rp-hint", done));
+        const result = await fn();
+        const message = typeof result === "string" ? result : done;
+        if (message) {
+          panel.replaceChildren(h(doc, "p", "rp-hint", message));
           setTimeout(() => (panel.hidden = true), 2500);
         } else {
           panel.hidden = true;

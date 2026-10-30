@@ -97,16 +97,32 @@ async function pagedText(attachment: any, maxChars: number, focusPage = 1): Prom
   return { text: parts.join("\n\n"), kept: new Set([...kept].map((i) => i + 1)) };
 }
 
-export async function buildPaper(attachment: any, prefs: Prefs, focusPage?: number): Promise<PagedText> {
+// `where` is the page the reader is on: its position in the PDF (what the
+// [p. N] markers count, and what a capped paper is centred on) and its printed
+// label. A journal article printed as pp. 215–240 is PDF pp. 1–26; the reader,
+// their highlights and the model's citations should use the printed numbers,
+// so when the label is a number the model is told the offset.
+export async function buildPaper(
+  attachment: any,
+  prefs: Prefs,
+  where: { label?: string; index?: number } = {}
+): Promise<PagedText> {
   const cap = prefs.maxChars > 0 ? prefs.maxChars : Number.MAX_SAFE_INTEGER;
-  const paged = await pagedText(attachment, cap, focusPage);
+  const paged = await pagedText(attachment, cap, where.index);
   const cite = citation(attachment);
   const what = paged.kept
     ? `Its text follows, shortened to fit: some pages are omitted, as marked. [p. N] marks the start of PDF page N.`
     : `Its full text follows; [p. N] marks the start of PDF page N.`;
+  const printed = /^\d+$/.test(where.label ?? "") ? Number(where.label) : NaN;
+  const offset = where.index && Number.isFinite(printed) ? printed - where.index : 0;
+  const numbering = offset
+    ? ` The printed page numbers differ: printed page = PDF page ${offset > 0 ? "+" : "−"} ${Math.abs(offset)}` +
+      ` (so [p. ${where.index}] is printed p. ${printed}). The reader's page numbers and highlights use printed numbers;` +
+      ` give printed numbers when you cite.`
+    : "";
   return {
     kept: paged.kept,
-    text: `The paper you are discussing is "${paperTitle(attachment)}"${cite ? ` (${cite})` : ""}. ${what}\n\n${paged.text}`,
+    text: `The paper you are discussing is "${paperTitle(attachment)}"${cite ? ` (${cite})` : ""}. ${what}${numbering}\n\n${paged.text}`,
   };
 }
 

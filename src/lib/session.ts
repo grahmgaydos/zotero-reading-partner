@@ -16,8 +16,10 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   focus?: Focus;
-  /** The page label the reader was on when this was sent. */
+  /** The page label the reader was on when this was sent (the printed number). */
   page?: string;
+  /** The same page's position in the PDF, from 1. */
+  pageIndex?: number;
   usage?: Usage;
   error?: string;
 }
@@ -27,6 +29,12 @@ export interface PinnedPoint {
   text: string;
   passage: string;
   pageLabel?: string;
+}
+
+/** Where the reader is: the page's printed label and its position in the PDF. */
+export interface ReaderPage {
+  label?: string;
+  index?: number;
 }
 
 type Listener = () => void;
@@ -73,6 +81,8 @@ export class Session {
   private abort: AbortController | null = null;
   private listeners = new Set<Listener>();
   private loaded: Promise<void>;
+  // Saves run one at a time, in order, so an older snapshot can't land last.
+  private saving: Promise<void> = Promise.resolve();
 
   constructor(readonly attachmentID: number) {
     this.loaded = this.load();
@@ -97,22 +107,33 @@ export class Session {
     }
   }
 
-  setRelated(ids: number[]): void {
+  // Mutators wait for the saved conversation to load first; otherwise the
+  // load would overwrite the change, or a save would write an empty
+  // conversation over the file before it was read.
+  async setRelated(ids: number[]): Promise<void> {
+    await this.loaded;
     this.related = ids;
     this.relatedText = null;
     this.emit();
-    void this.save();
+    await this.save();
   }
 
-  recordPinnedPoint(p: PinnedPoint): void {
+  async recordPinnedPoint(p: PinnedPoint): Promise<void> {
+    await this.loaded;
     this.pinnedPoints.push(p);
-    void this.save();
+    await this.save();
   }
 
-  markExported(): void {
-    this.exportedThrough = this.messages.length;
-    this.pinnedPoints = [];
-    void this.save();
+  /**
+   * After a wiki entry is filed: marks the messages and pinned points that
+   * went into its draft as done. Anything added while the draft was being
+   * reviewed stays for the next entry.
+   */
+  async markExported(through: number, pinCount: number): Promise<void> {
+    await this.loaded;
+    this.exportedThrough = Math.max(this.exportedThrough, Math.min(through, this.messages.length));
+    this.pinnedPoints = this.pinnedPoints.slice(pinCount);
+    await this.save();
   }
 
   setDraftFocus(focus: Focus | null): void {
@@ -135,23 +156,27 @@ export class Session {
     return this.context;
   }
 
-  async send(text: string, focus?: Focus, page?: string): Promise<void> {
+  /** False if the message wasn't sent because a reply is still coming in. */
+  async send(text: string, focus?: Focus, where: ReaderPage = {}): Promise<boolean> {
     await this.loaded;
-    if (this.busy || !text.trim()) return;
+    if (!text.trim()) return true;
+    if (this.busy) return false;
     const prefs = getPrefs();
-    this.messages.push({ role: "user", content: text.trim(), focus, page });
+    this.messages.push({ role: "user", content: text.trim(), focus, page: where.label, pageIndex: where.index });
     const reply: Message = { role: "assistant", content: "" };
     this.messages.push(reply);
     this.busy = true;
     this.emit();
+    // Keep the question even if Zotero quits before the reply finishes.
+    void this.save();
+    const abort = new AbortController();
+    this.abort = abort;
 
     try {
-      this.abort = new AbortController();
       if (this.paper === null) {
         this.status = "Reading the paper…";
         this.emit();
-        const pageNum = Number.parseInt(page ?? "", 10);
-        this.paper = (await buildPaper(this.attachment, prefs, pageNum || undefined)).text;
+        this.paper = (await buildPaper(this.attachment, prefs, where)).text;
       }
       if (this.relatedText === null && this.related.length) {
         this.status = "Reading the other texts…";
@@ -183,8 +208,11 @@ export class Session {
             });
           }
         },
-        this.abort?.signal
+        abort.signal
       );
+      if (!reply.content.trim() && !abort.signal.aborted) {
+        reply.error = "The model returned no text. A thinking model may have used its whole reply length; try again, or raise Max reply length.";
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         reply.error = e?.message || String(e);
@@ -197,6 +225,7 @@ export class Session {
       this.emit();
       void this.save();
     }
+    return true;
   }
 
   stop(): void {
@@ -204,6 +233,7 @@ export class Session {
   }
 
   async clear(): Promise<void> {
+    await this.loaded;
     this.stop();
     this.messages = [];
     this.exportedThrough = 0;
@@ -223,10 +253,10 @@ export class Session {
       if (m.role === "user") {
         const next = this.messages[i + 1];
         const isLast = i === this.messages.length - 2;
-        if (!isLast && (!next || next.error || !next.content)) continue;
+        if (!isLast && (!next || next.error || !next.content.trim())) continue;
         out.push({ role: "user", content: userTurn(m, lastPage) });
         lastPage = m.page ?? lastPage;
-      } else if (!m.error && m.content) {
+      } else if (!m.error && m.content.trim()) {
         out.push({ role: "assistant", content: m.content });
       }
     }
@@ -239,32 +269,57 @@ export class Session {
   }
 
   private async load(): Promise<void> {
+    let path = "";
     try {
-      const path = this.filePath();
-      if (await IOUtils.exists(path)) {
-        const data = JSON.parse(await IOUtils.readUTF8(path));
-        if (Array.isArray(data?.messages)) this.messages = data.messages;
-        if (Array.isArray(data?.related)) this.related = data.related;
-        if (Array.isArray(data?.pinnedPoints)) this.pinnedPoints = data.pinnedPoints;
-        this.exportedThrough = Number(data?.exportedThrough) || 0;
+      path = this.filePath();
+      if (!(await IOUtils.exists(path))) return;
+      const text = await IOUtils.readUTF8(path);
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e: any) {
+        // Don't let the next save overwrite it: set it aside so the
+        // conversation can still be recovered by hand.
+        const aside = path.replace(/\.json$/, `.unreadable-${Date.now()}.json`);
+        await IOUtils.move(path, aside);
+        log(`saved conversation unreadable (${e?.message || e}); moved to ${aside}`);
+        this.status = "The saved conversation couldn't be read, so it was set aside and this one starts fresh.";
         this.emit();
+        return;
       }
+      if (Array.isArray(data?.messages)) this.messages = data.messages;
+      if (Array.isArray(data?.related)) this.related = data.related;
+      if (Array.isArray(data?.pinnedPoints)) this.pinnedPoints = data.pinnedPoints;
+      this.exportedThrough = Number(data?.exportedThrough) || 0;
+      this.emit();
     } catch (e: any) {
       log(`load failed: ${e?.message || e}`);
     }
   }
 
-  private async save(): Promise<void> {
+  private save(): Promise<void> {
+    this.saving = this.saving.then(() => this.write());
+    return this.saving;
+  }
+
+  private async write(): Promise<void> {
+    await this.loaded;
     try {
       const path = this.filePath();
       await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true });
-      await IOUtils.writeUTF8(path, JSON.stringify({
+      // Written to a temporary file and renamed, so a crash mid-write leaves
+      // the previous version rather than half a file.
+      await IOUtils.writeUTF8(
+        path,
+        JSON.stringify({
           version: 1,
           messages: this.messages,
           related: this.related,
           pinnedPoints: this.pinnedPoints,
           exportedThrough: this.exportedThrough,
-        }));
+        }),
+        { tmpPath: `${path}.tmp` }
+      );
     } catch (e: any) {
       log(`save failed: ${e?.message || e}`);
     }

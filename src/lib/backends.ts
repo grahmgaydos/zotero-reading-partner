@@ -102,6 +102,9 @@ async function streamOpenAICompatible(
   for await (const data of sseData(res)) {
     if (data === "[DONE]") break;
     const json = parse(data);
+    // OpenRouter, LM Studio and proxies can report a failure inside a 200
+    // stream instead of with an HTTP status.
+    if (json?.error) throw new Error(json.error.message || JSON.stringify(json.error));
     const delta = json?.choices?.[0]?.delta?.content;
     if (typeof delta === "string" && delta) onDelta(delta);
     if (json?.usage) {
