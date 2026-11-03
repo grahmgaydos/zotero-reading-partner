@@ -3,6 +3,17 @@
     "reading-partner@grahmgaydos.dev": {
       "updates": [
         {
+          "version": "0.1.2",
+          "update_link": "https://github.com/grahmgaydos/zotero-reading-partner/releases/download/v0.1.2/reading-partner-0.1.2.xpi",
+          "update_hash": "sha256:2139f5ad4a87cd9076ed951b42c810e34d0cdf62b0143838f7b9804a9a84e057",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "11.*"
+            }
+          }
+        },
+        {
           "version": "0.1.1",
           "update_link": "https://github.com/grahmgaydos/zotero-reading-partner/releases/download/v0.1.1/reading-partner-0.1.1.xpi",
           "update_hash": "sha256:52b279e339c3f21ef40c010fc2afa5078816dda29c735fb5eaceec959b2d80b4",
